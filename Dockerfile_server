@@ -1,0 +1,4 @@
+FROM scratch
+WORKDIR /app
+ADD cmake-build-debug/RcvMulCast /app
+CMD ["/app/RcvMulCast"]
