@@ -1,4 +1,6 @@
-FROM scratch
+FROM alpine
 WORKDIR /app
 ADD cmake-build-debug/SndMulCast /app
-CMD ["/app/SndMulCast"]
+ADD cmake-build-debug/ListServers /app
+# Start SndMultiCast in the background and replace it with a shell to run ListServers on demand
+CMD ["/bin/sh", "-c", "/app/SndMulCast & exec /bin/sh"]
