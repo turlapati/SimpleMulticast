@@ -62,8 +62,16 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
 
-    printf("Start...\n");
+//    printf("Start...\n");
     int ret_val = 0;
+
+    struct timespec my_timespec;
+    my_timespec.tv_sec = interval - 1;
+    my_timespec.tv_nsec = 0;
+
+    // Receive and print the response
+    ssize_t bytes_read;
+
     // Send the "GET_LIST" command periodically
     while (num_queries == 0 || num_retries-- > 0) {
 //        printf("Before mq_send... %ld\n", num_queries);
@@ -76,12 +84,6 @@ int main(int argc, char *argv[]) {
 
         printf("Sent GET_LIST command\n");
 
-        struct timespec my_timespec;
-        my_timespec.tv_sec = interval - 1;
-        my_timespec.tv_nsec = 0;
-
-        // Receive and print the response
-        ssize_t bytes_read;
         // bytes_read = mq_receive(mqd_receive, recv_buffer, sizeof(recv_buffer), NULL);
         bytes_read = mq_timedreceive(mqd_receive, recv_buffer, sizeof(recv_buffer), NULL, &my_timespec);
         if (bytes_read >= 0) {

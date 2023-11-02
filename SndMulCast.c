@@ -14,11 +14,11 @@
 #include <fcntl.h>           /* For O_* constants */
 #include <pthread.h>
 
+#define INTERFACE_NAME "eth0"
 #define MULTICAST_ADDR "224.0.0.1"
 #define MULTICAST_PORT 5000
 #define UNICAST_PORT 5000
 
-#define MAX_IPS 254
 #define MAX_FAILURES 10
 //#define TIMEOUT 1
 
@@ -26,16 +26,123 @@
 #define SEND_MQ_NAME "/sm2ls_queue"
 #define RECV_MQ_NAME "/ls2sm_queue"
 
-typedef struct Host {
+typedef struct DiscoveredList {
     char ip_address[16];
     int failures;
-    struct Host *next;
-} Host;
+    struct DiscoveredList *next;
+} discovered_list;
 
-Host *head = NULL;
+typedef struct SnapShot {
+    char ip_address[16];
+    struct SnapShot *next;
+} current_list;
 
+discovered_list *head = NULL;
 mqd_t mqd_send, mqd_receive;
 pthread_t thread_id;
+pthread_mutex_t discovered_list_lock;
+
+// Function to add a node to the current_list
+void add_to_current_list(current_list **head_ref, char *ip_address) {
+    current_list *new_node = malloc(sizeof(current_list));
+    strcpy(new_node->ip_address, ip_address);
+    new_node->next = *head_ref;
+    *head_ref = new_node;
+}
+
+// Function to add a node to the discovered_list
+void add_to_discovered_list(discovered_list **head_ref, char *ip_address) {
+    discovered_list *new_node = malloc(sizeof(discovered_list));
+    strcpy(new_node->ip_address, ip_address);
+    new_node->failures = 0;
+    new_node->next = *head_ref;
+    *head_ref = new_node;
+}
+
+// Function to add new nodes to the discovered list based on the current list
+void add_new_nodes_to_discovered_list(discovered_list **head_ref, current_list *current_head) {
+    current_list *curr_temp = current_head;
+    while (curr_temp != NULL) {
+        discovered_list *temp = *head_ref;
+        while (temp != NULL && strcmp(temp->ip_address, curr_temp->ip_address) != 0) {
+            temp = temp->next;
+        }
+        if (temp == NULL) {
+            // add node to discovered list
+            add_to_discovered_list(head_ref, curr_temp->ip_address);
+        }
+        curr_temp = curr_temp->next;
+    }
+}
+
+// Function to delete a node from the discovered_list
+void delete_discovered_list_node(discovered_list **head_ref, char *ip_address) {
+    discovered_list *temp = *head_ref, *prev;
+
+    // If head node itself holds the key to be deleted
+    if (temp != NULL && strcmp(temp->ip_address, ip_address) == 0) {
+        *head_ref = temp->next;   // Changed head
+        free(temp);               // free old head
+        return;
+    }
+
+    // Search for the key to be deleted, keep track of the previous node as we need to change 'prev->next'
+    while (temp != NULL && strcmp(temp->ip_address, ip_address) != 0) {
+        prev = temp;
+        temp = temp->next;
+    }
+
+    // If key was not present in linked list
+    if (temp == NULL) return;
+
+    // Unlink the node from linked list
+    prev->next = temp->next;
+
+    free(temp);  // Free memory
+}
+
+// Function to update the discovered list based on the current list
+void update_discovered_list(discovered_list **head_ref, current_list *current_head) {
+    discovered_list *temp = *head_ref;
+    while (temp != NULL) {
+        current_list *curr_temp = current_head;
+        while (curr_temp != NULL && strcmp(temp->ip_address, curr_temp->ip_address) != 0) {
+            curr_temp = curr_temp->next;
+        }
+        if (curr_temp == NULL) {
+            temp->failures++;
+            if (temp->failures > MAX_FAILURES) {
+                // delete node from discovered list
+                delete_discovered_list_node(head_ref, temp->ip_address);
+            }
+        } else {
+            temp->failures = 0;
+        }
+        temp = temp->next;
+    }
+}
+
+// Function to free the memory allocated for the current_list
+void free_current_list(current_list *current_head) {
+    current_list *tmp;
+
+    while (current_head != NULL) {
+        tmp = current_head;
+        current_head = current_head->next;
+        free(tmp);
+    }
+}
+
+// Function to free the memory allocated for the discovered_list
+void free_discovered_list(discovered_list *disc_head) {
+    discovered_list *tmp;
+
+    while (disc_head != NULL) {
+        tmp = disc_head;
+        disc_head = disc_head->next;
+        free(tmp);
+    }
+}
 
 void *worker_thread(__attribute__((unused)) void *arg) {
     int socket_fd;
@@ -63,9 +170,9 @@ void *worker_thread(__attribute__((unused)) void *arg) {
     }
 
     struct ifreq interface;
-    strcpy(interface.ifr_ifrn.ifrn_name, "eth0");
+    strcpy(interface.ifr_ifrn.ifrn_name, INTERFACE_NAME);
     if (setsockopt(socket_fd, SOL_SOCKET, SO_BINDTODEVICE, &interface, sizeof(interface)) < 0) {
-        perror("Bind to eth0");
+        perror("Bind to INTERFACE_NAME");
         pthread_exit((void *) 1);
     }
 
@@ -99,6 +206,8 @@ void *worker_thread(__attribute__((unused)) void *arg) {
             break;
         }
 
+        current_list *current_head = NULL;
+
         long recv_addr_len = sizeof(unicast_recv_addr);
         memset(&unicast_recv_addr, 0, recv_addr_len);
         // Receive the reply
@@ -107,44 +216,35 @@ void *worker_thread(__attribute__((unused)) void *arg) {
             recv_buf[recv_len] = '\0';
             // Extract IP address of the responding host
             char *from_ip_address = inet_ntoa(unicast_recv_addr.sin_addr);
-//            printf("Received message: %s from %s\n", recv_buf, from_ip_address);
-
-            // Check if IP address is already in hosts array
-            int i;
-            for (i = 0; i < host_count; i++) {
-                if (strcmp(hosts[i].ip_address, from_ip_address) == 0) {
-                    // IP address found in array, reset failures count
-                    hosts[i].failures = 0;
-                    break;
-                }
-            }
-
-            // If IP address not found in array, add it
-            if (i == host_count && host_count < MAX_IPS) {
-                strncpy(hosts[host_count].ip_address, from_ip_address, sizeof(hosts[host_count].ip_address));
-                hosts[host_count].failures = 0;
-                host_count++;
-                printf("Added new host...\n");
-            } else if (host_count >= MAX_IPS) {
-                printf("Hosts array is full\n");
-            }
+            // printf("Received message: %s from %s\n", recv_buf, from_ip_address);
+            // Build a current_list using from_ip_address
+            add_to_current_list(&current_head, from_ip_address);
         }
 
-        // Delete IP address if no response N times
-        for (int i = 0; i < host_count; i++) {
-            if (hosts[i].failures >= MAX_FAILURES) {
-                // Remove host from list
-                for (int j = i; j < host_count - 1; j++) {
-                    memcpy(&hosts[j], &hosts[j + 1], sizeof(Host));
-                }
-                host_count--;
-            }
-        }
+        // Lock the mutex to update the discovered_list
+        pthread_mutex_lock(&discovered_list_lock);
+
+        // Compare ip_address fields in current_list and discovered_list
+        // If any IP address in discovered_list is not in current_list, increase its failures count.
+        // If the failure count is greater than MAX_FAILURES, delete the IP address from the discovered_list
+        update_discovered_list(&head, current_head);
+
+        // If IP address not found, add it to discovered_list
+        add_new_nodes_to_discovered_list(&head, current_head);
+
+        // Unlock the mutex
+        pthread_mutex_unlock(&discovered_list_lock);
+
+        // Free memory allocated for current list
+        free_current_list(current_head);
 
         sleep(1);
     }
 
     close(socket_fd);
+
+    // Free memory allocated for discovered list
+    free_discovered_list(head);
 
     pthread_exit(NULL);
 }
@@ -179,6 +279,11 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    if (pthread_mutex_init(&discovered_list_lock, NULL) != 0) {
+        perror("pthread_mutex_init");
+        exit(EXIT_FAILURE);
+    }
+
     // Initialize worker thread
     if (pthread_create(&thread_id, NULL, worker_thread, NULL) != 0) {
         perror("pthread_create failed");
@@ -205,15 +310,24 @@ int main() {
 
         buffer[bytes_read] = '\0';
 
-        printf("MQ Message: %s\n", buffer);
+//        printf("MQ Message: %s\n", buffer);
 
         if (strcmp(buffer, "GET_LIST") == 0) {
             char reply[1024] = "";
-            for (int i = 0; i < host_count; i++) {
-                if (i > 0)
-                    strcat(reply, "\n");
-                strcat(reply, hosts[i].ip_address);
+
+            // Lock the mutex before reading the discovered_list
+            pthread_mutex_lock(&discovered_list_lock);
+
+            discovered_list *tmp = head;
+            while (tmp != NULL) {
+                strcat(reply, "\n");
+                strcat(reply, tmp->ip_address);
+                tmp = tmp->next;
             }
+
+            // Unlock the mutex
+            pthread_mutex_unlock(&discovered_list_lock);
+
             if (mq_send(mqd_send, reply, sizeof(reply), 0) == -1) {
                 perror("mq_send");
             }

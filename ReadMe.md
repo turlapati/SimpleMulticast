@@ -1,5 +1,6 @@
 # Testing Multicast Client & Server
-## Statically compile the binaries
+
+### Step #1 Statically compile the binaries
 Plan is to use a basic (or minimum size) docker image like **_scratch_** or **_alpine_** to run the client and server
 programs.
 Make sure that CMakeLists.txt has the following directives to build a static binary.
@@ -24,7 +25,8 @@ WORKDIR /app
 ADD ./theClient /app
 CMD ["/app/theClient"]
 ```
-### Create docker image
+
+### Step #2 Create docker image for client
 ```shell
 sudo docker build -t the_client -f Dockerfile_client .
 ```
@@ -40,12 +42,14 @@ WORKDIR /app
 ADD ./theServer /app
 CMD ["/app/theServer"]
 ```
-### Create docker image
+
+### Step #3 Create docker image for the server
 ```shell
 sudo docker build -t the_server -f Dockerfile_server .
 ```
 ## Instructions for Docker
-### Create a Docker Network
+
+### Step #4 Create a Docker Network
 Note: Change **enp3s0** below to match with your host-machine's interface name
 ```shell
 sudo docker network create -d ipvlan \
@@ -55,8 +59,10 @@ sudo docker network create -d ipvlan \
                            -o parent=enp3s0 \
                            my_network
 ```
-### Start one or more Server instance(s)
-Make sure to assign a _unique static IP address_ within the subnet for each instance and avoid IP address conflicts
+
+### Step #5 Start one or more Server instance(s)
+
+Make sure to assign a _unique static IP address_ within the subnet **for each instance** and avoid IP address conflicts
 ```shell
 sudo docker run -it \
                 --network my_network \
@@ -65,7 +71,7 @@ sudo docker run -it \
                 the_server
 ```
 
-### Start the Client to start sending multicasts
+### Step #6 Start the Client to start sending multicasts
 ```shell
 sudo docker run -it \
                 --network my_network \
@@ -74,20 +80,17 @@ sudo docker run -it \
                 the_client
 ```
 
+### Step #7 Start the ListServers program on the client docker instance
+
+[Screenshot](img.png)
 ## References
-
 https://www.cs.unc.edu/~jeffay/dirt/FAQ/comp249-001-F99/mcast-socket.html
-
 ## Other useful commands
-
 #### Stop-all docker processes
-
 ```shell
 sudo docker stop $(sudo docker ps -q)
 ```
-
 #### Remove all docker images
-
 ```shell
 sudo docker rmi -f $sudo docker images -q)
 ```
